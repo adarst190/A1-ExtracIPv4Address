@@ -178,9 +178,10 @@ int extractIPv4(const char *str,
             {
                 return 1;
             }
+        } else
+        {
+            i++;
         }
-
-        i++;
     }
 
     return 0;
