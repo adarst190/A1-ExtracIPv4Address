@@ -1,32 +1,37 @@
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <ctype.h>
 
-static int validNumber(const char *s, int minDigits, int maxDigits,
-                       int minValue, int maxValue, long *value)
+static int parseNumber(const char *s, int minDigits, int maxDigits,
+                       int maxValue, int *value)
 {
-    int len = strlen(s);
+    int len = 0;
+    int result = 0;
+
+    while (s[len] != '\0')
+    {
+        if (!isdigit((unsigned char)s[len]))
+            return 0;
+
+        len++;
+    }
 
     if (len < minDigits || len > maxDigits)
         return 0;
 
-    for (int i = 0; i < len; i++)
-    {
-        if (!isdigit((unsigned char)s[i]))
-            return 0;
-    }
-
-    /* No leading zeros unless the value is exactly 0 */
     if (len > 1 && s[0] == '0')
         return 0;
 
-    long v = strtol(s, NULL, 10);
+    for (int i = 0; i < len; i++)
+    {
+        result = result * 10 + (s[i] - '0');
 
-    if (v < minValue || v > maxValue)
-        return 0;
+        if (result > maxValue)
+            return 0;
+    }
 
-    *value = v;
+    *value = result;
     return 1;
 }
 
@@ -34,83 +39,89 @@ static int validateToken(const char *token,
                          unsigned long *outAddress,
                          int *outPort)
 {
-    char copy[128];
-    char addressPart[128];
-    char *colonPos;
-    long portValue;
-    int octetCount = 0;
     unsigned long octets[4];
+    int octetCount = 0;
+    int portValue = -1;
+    int i = 0;
 
-    if (strlen(token) >= sizeof(copy))
-        return 0;
-
-    strcpy(copy, token);
-
-    /* Check for optional port */
-    colonPos = strchr(copy, ':');
-
-    if (colonPos)
+    while (token[i] != '\0')
     {
-        /* Only one colon allowed */
-        if (strchr(colonPos + 1, ':'))
-            return 0;
-
-        *colonPos = '\0';
-
-        if (!validNumber(colonPos + 1,
-                         1, 5,
-                         0, 65535,
-                         &portValue))
-            return 0;
-
-        *outPort = (int)portValue;
-    }
-    else
-    {
-        *outPort = -1;
-    }
-
-    strcpy(addressPart, copy);
-
-    char *saveptr;
-    char *part = strtok_r(addressPart, ".", &saveptr);
-
-    while (part)
-    {
-        long value;
+        char buffer[6];
+        int digits = 0;
+        int value = 0;
 
         if (octetCount >= 4)
             return 0;
 
-        if (!validNumber(part,
-                         1, 3,
-                         0, 255,
-                         &value))
+        while (isdigit((unsigned char)token[i]))
+        {
+            if (digits >= 3)
+                return 0;
+
+            buffer[digits++] = token[i++];
+        }
+
+        buffer[digits] = '\0';
+
+        if (!parseNumber(buffer, 1, 3, 255, &value))
             return 0;
 
         octets[octetCount++] = (unsigned long)value;
-        part = strtok_r(NULL, ".", &saveptr);
+
+        if (octetCount < 4)
+        {
+            if (token[i] != '.')
+                return 0;
+
+            i++;
+        }
+        else
+        {
+            break;
+        }
     }
 
     if (octetCount != 4)
         return 0;
 
-    /* Ensure exactly 3 periods */
-    int dots = 0;
-    for (int i = 0; copy[i]; i++)
+    if (token[i] == '\0')
     {
-        if (copy[i] == '.')
-            dots++;
+        *outPort = -1;
+    }
+    else
+    {
+        if (token[i] != ':')
+            return 0;
+
+        i++;
+
+        char portBuf[8];
+        int digits = 0;
+
+        while (isdigit((unsigned char)token[i]))
+        {
+            if (digits >= 5)
+                return 0;
+
+            portBuf[digits++] = token[i++];
+        }
+
+        portBuf[digits] = '\0';
+
+        if (!parseNumber(portBuf, 1, 5, 65535, &portValue))
+            return 0;
+
+        *outPort = portValue;
     }
 
-    if (dots != 3)
+    if (token[i] != '\0')
         return 0;
 
     *outAddress =
         (octets[0] << 24) |
         (octets[1] << 16) |
-        (octets[2] << 8)  |
-         octets[3];
+        (octets[2] << 8) |
+        octets[3];
 
     return 1;
 }
@@ -121,10 +132,15 @@ int extractIPv4(const char *str,
 {
     int i = 0;
 
+    if (str == NULL || outAddress == NULL || outPort == NULL)
+    {
+        return 0;
+    }
+
     *outAddress = 0;
     *outPort = -1;
 
-    while (str[i])
+    while (str[i] != '\0')
     {
         if (isdigit((unsigned char)str[i]) ||
             str[i] == '.' ||
@@ -132,28 +148,39 @@ int extractIPv4(const char *str,
         {
             char token[128];
             int j = 0;
-            int start = i;
+            int overflow = 0;
 
-            while (str[i] &&
+            while (str[i] != '\0' &&
                    (isdigit((unsigned char)str[i]) ||
                     str[i] == '.' ||
                     str[i] == ':'))
             {
                 if (j < (int)sizeof(token) - 1)
+                {
                     token[j++] = str[i];
+                }
+                else
+                {
+                    overflow = 1;
+                }
 
                 i++;
+            }
+
+            if (overflow)
+            {
+                continue;
             }
 
             token[j] = '\0';
 
             if (validateToken(token, outAddress, outPort))
+            {
                 return 1;
+            }
         }
-        else
-        {
-            i++;
-        }
+
+        i++;
     }
 
     return 0;
@@ -167,7 +194,8 @@ int main(void)
 
     while (1)
     {
-        printf("Enter text: ");
+        printf("Enter a string (or 'END' to quit): ");
+
         if (!fgets(input, sizeof(input), stdin))
             break;
 
@@ -182,18 +210,16 @@ int main(void)
         if (extractIPv4(input, &address, &port))
         {
             printf("Extracted IPv4 address: ");
-
             printf("%lu.%lu.%lu.%lu",
                    (address >> 24) & 255,
                    (address >> 16) & 255,
                    (address >> 8) & 255,
                    address & 255);
 
-            printf(" (decimal value: %lu, port: ",
-                   address);
+            printf(" (decimal value: %lu, port: ", address);
 
             if (port == -1)
-                printf("NONE");
+                printf("none");
             else
                 printf("%d", port);
 
@@ -201,7 +227,7 @@ int main(void)
         }
         else
         {
-            printf("No valid IPv4 address found\n");
+            printf("Invalid input: no valid IPv4 address found\n");
         }
     }
 
